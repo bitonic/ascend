@@ -100,36 +100,52 @@ checkEqual :: (IsVar a) => Exp a -> Exp a -> Either String ()
 checkEqual a b = do
   unless (a == b) (Left "expressions not equal")
 
+checkPhase :: Phase -> Phase -> Either String ()
+checkPhase required given = do
+  unless (given <= required) $
+    Left ("Bad phase: " ++ show (required, given))
+
 check ::
      (IsVar a)
-  => Env a -> Type a -> Exp a -> Either String ()
-check env ty = \case
+  => Env a -> Phase -> Type a -> Exp a -> Either String ()
+check env phase ty = \case
   Type -> do
+    checkPhase phase Heaven
     checkEqual Type ty
   Pi _b domPhase dom cod -> do
+    checkPhase phase Heaven
     checkEqual Type ty
-    check env Type dom
-    check (extend env (domPhase, dom)) Type cod
+    check env Heaven Type dom
+    check (extend env (domPhase, dom)) Heaven Type cod
   Lam _b body -> case ty of
     Pi _b domPhase dom cod -> do
-      check (extend env (domPhase, dom)) cod body
+      check (extend env (domPhase, dom)) phase cod body
     _ -> do
       Left "non-Pi type for Lam"
   Neutral v args -> do
-    let (_phase, funTy) = env v
-    ty' <- checkSpine env funTy args
+    let (phase', funTy) = env v
+    checkPhase phase phase'
+    ty' <- checkSpine env phase funTy args
     checkEqual ty ty'
+
+lub :: Phase -> Phase -> Phase
+lub a b = case (a, b) of
+  (Earth, Earth) -> Earth
+  (Heaven, Earth) -> Heaven
+  (Earth, Heaven) -> Heaven
+  (Heaven, Heaven) -> Heaven
 
 checkSpine ::
      (IsVar a)
-  => Env a -> Type a -> [Exp a] -> Either String (Type a)
-checkSpine env ty = \case
+  => Env a -> Phase -> Type a -> [Exp a] -> Either String (Type a)
+checkSpine env phase ty = \case
   [] -> return ty
   arg : args -> case ty of
-    Pi _b _domPhase dom cod -> do
-      check env dom arg
+    Pi _b domPhase dom cod -> do
+      check env (lub phase domPhase) dom arg
       checkSpine
         env
+        phase
         (cod >>= \case
           B{} -> arg
           F v -> return v)
@@ -218,7 +234,7 @@ test name vars00 phase ty0 e0 = do
         go (\v -> Left ("out of scope var " ++ show v)) absurd vars00 $ \getv env -> do
           ty <- traverse getv ty0
           e <- traverse getv e0
-          check env ty e
+          check env phase ty e
   putStrLn ("### " ++ name)
   case mbErr of
     Left err -> do
@@ -235,13 +251,13 @@ test name vars00 phase ty0 e0 = do
       -> Either String c
     go getv env vars0 cont = case vars0 of
       [] -> cont getv env
-      (v, phase, ty) : vars -> do
+      (v, tyPhase, ty) : vars -> do
         ty' <- traverse getv ty
         go
           (\v' -> if v == v'
               then return (B (Forget (T.pack v)))
               else F <$> getv v')
-          (extend env (phase, ty'))
+          (extend env (tyPhase, ty'))
           vars
           cont
 
@@ -267,7 +283,19 @@ test2 = test "NAT"
   "Nat"
   (eapp "suc" ["n"])
 
+test3 :: IO ()
+test3 = test "SHOULD-FAIL"
+  [ ("Nat", Heaven, Type)
+  , ("zero", Earth, "Nat")
+  , ("suc", Earth, (Earth, "Nat") --> "Nat")
+  , ("n", Heaven, "Nat")
+  ]
+  Earth
+  "Nat"
+  "n"
+
 main :: IO ()
 main = do
   test1
   test2
+  test3
