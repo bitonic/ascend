@@ -4,19 +4,20 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleInstances #-}
 module Ascend where
 
 import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (ap, unless, when)
-import Data.Monoid ((<>))
 import Data.Traversable (for)
-
-tshow :: (Show a) => a -> Text
-tshow = T.pack . show
+import Data.Void (Void, absurd)
+import Data.String (IsString(fromString))
 
 newtype Forget a = Forget {remember :: a}
-  deriving (Functor, Foldable, Traversable)
+  deriving (Functor, Foldable, Traversable, IsString)
 
 instance Eq (Forget a) where
   _ == _ = True
@@ -95,13 +96,13 @@ extend env (phase, ty_) = \case
 
 type IsVar a = (Eq a)
 
-checkEqual :: (IsVar a) => Exp a -> Exp a -> Either Text ()
+checkEqual :: (IsVar a) => Exp a -> Exp a -> Either String ()
 checkEqual a b = do
   unless (a == b) (Left "expressions not equal")
 
 check ::
      (IsVar a)
-  => Env a -> Type a -> Exp a -> Either Text ()
+  => Env a -> Type a -> Exp a -> Either String ()
 check env ty = \case
   Type -> do
     checkEqual Type ty
@@ -121,7 +122,7 @@ check env ty = \case
 
 checkSpine ::
      (IsVar a)
-  => Env a -> Type a -> [Exp a] -> Either Text (Type a)
+  => Env a -> Type a -> [Exp a] -> Either String (Type a)
 checkSpine env ty = \case
   [] -> return ty
   arg : args -> case ty of
@@ -140,7 +141,7 @@ data UExp a =
   | UNeutral a [UExp a]
   deriving (Functor, Foldable, Traversable, Eq, Show)
 
-erase :: Env a -> Type a -> Exp a -> Either Text (UExp a)
+erase :: Env a -> Type a -> Exp a -> Either String (UExp a)
 erase env ty = \case
   Type -> Left "Type in erasure"
   Pi{} -> Left "Pi in erasure"
@@ -162,7 +163,7 @@ erase env ty = \case
     args <- eraseSpine env ty' args0
     return (UNeutral v args)
 
-eraseSpine :: Env a -> Type a -> [Exp a] -> Either Text [UExp a]
+eraseSpine :: Env a -> Type a -> [Exp a] -> Either String [UExp a]
 eraseSpine env ty = \case
   [] -> return []
   arg0 : args0 -> case ty of
@@ -180,80 +181,93 @@ eraseSpine env ty = \case
           return (arg : args)
     _ -> Left "non-Pi type in application and eraseSpine"
 
+-- DSL
+-- --------------------------------------------------------------------
 
-{-
-checkPhase ::
-     Phase -- ^ the phase we're checking against
-  -> Phase -- ^ the phase we have
-  -> Either Text ()
-checkPhase phase1 phase2 = do
-  unless (phase2 <= phase1) (Left ("illegal descent: "  <> tshow (phase1, phase2)))
+abstract :: (Functor f, Eq a) => a -> Binder -> f a -> f (Var a)
+abstract v b = fmap (\v' -> if v == v' then B b else F v')
 
-check :: (IsVar a) => Env a -> Type a -> Exp a -> Either Text Phase
-check env ty = \case
-  Type -> do
-    checkEqual ty Type
-    return Heaven
-  Pi _b domPhase dom cod -> do
-    checkPhase Heaven =<< check env Type dom
-    checkPhase Heaven =<< check (extend env (domPhase, dom)) Type cod
-    return Heaven
-  Lam _b body -> do
-    case ty of
-      Pi _b domPhase dom cod -> do
-        checkPhase Heaven =<< check env Type dom
-        check (extend env (domPhase, dom)) cod body
-      _ -> Left "lambda without pi type"
-  Neutral v args -> do
-    let (vphase, vty) = env v
-    (phase, ty') <- checkSpine env vphase vty args
-    checkEqual ty ty'
-    return phase
+ety :: Exp a
+ety = Type
 
-checkSpine ::
-     (IsVar a)
-  => Env a -> Phase -> Type a -> [Exp a] -> Either Text (Phase, Type a)
-checkSpine = error "TODO"
--}
-{-
-check :: (IsVar a) => Env a -> Phase -> Type a -> Exp a -> Either Text ()
-check env phase ty = \case
-  Type -> do
-    checkPhase phase Heaven
-    checkEqual ty_ Type
-  Pi _b domPhase dom cod -> do
-    checkPhase phase Heaven
-    checkEqual ty_ Type
-    check env Heaven Type dom
-    check (extend env (domPhase, dom)) phase Type cod
-  Lam _b body -> do
-    case ty_ of
-      Pi _b domPhase dom cod -> do
-        check (extend env (domPhase, dom)) phase cod body
-      _ -> Left "lambda without pi type"
-  Neutral v args -> do
-    (phase', ty') <- infer env v args
-    checkPhase phase phase'
-    checkEqual ty_ ty'
+(==>) :: (String, Phase, Type String) -> Type String -> Type String
+(v, phase, dom) ==> cod = Pi b phase dom (abstract v b cod)
+  where
+    b = Forget (T.pack v)
 
-infer :: Env a -> a -> [Exp a] -> Either Text (Phase, Type a)
-infer env v args = do
-  let (phase, ty_) = env v
-  checkSpine env phase ty_ args
+(-->) :: (Phase, Type String) -> Type String -> Type String
+(phase, dom) --> cod = Pi "" phase dom (fmap F cod)
 
-phaseFor :: Phase -> Phase -> Phase
-phaseFor Earth Earth = Earth
-phaseFor Earth Heaven = Heaven
-phaseFor Heaven Earth = Heaven
-phaseFor Heaven Heaven = Heaven
+elam :: String -> Exp String -> Exp String
+elam v body = Lam b (abstract v b body)
+  where
+    b = Forget (T.pack v)
 
-checkSpine :: Env a -> Phase -> Type a -> [Exp a] -> Either Text (Phase, Type a)
-checkSpine = error "TODO"
--}
-{-
-checkSpine env phase ty = \case
-  [] -> return (phase, ty)
-  arg : args -> case ty of
-    Pi _b domPhase dom cod -> do
-      check env domPhase
--}
+eapp :: String -> [Exp String] -> Exp String
+eapp = Neutral
+
+ev :: String -> Exp String
+ev v = Neutral v []
+
+instance IsString (Exp String) where
+  fromString = ev
+
+test :: String -> [(String, Phase, Type String)] -> Phase -> Type String -> Exp String -> IO ()
+test name vars00 phase ty0 e0 = do
+  let mbErr =
+        go (\v -> Left ("out of scope var " ++ show v)) absurd vars00 $ \getv env -> do
+          ty <- traverse getv ty0
+          e <- traverse getv e0
+          check env ty e
+  putStrLn ("### " ++ name)
+  case mbErr of
+    Left err -> do
+      putStrLn "ERROR"
+      putStrLn err
+    Right () -> putStrLn "OK"
+  where
+    go ::
+         (IsVar a)
+      => (String -> Either String a)
+      -> Env a
+      -> [(String, Phase, Type String)]
+      -> (forall b. (IsVar b) => (String -> Either String b) -> Env b -> Either String c)
+      -> Either String c
+    go getv env vars0 cont = case vars0 of
+      [] -> cont getv env
+      (v, phase, ty) : vars -> do
+        ty' <- traverse getv ty
+        go
+          (\v' -> if v == v'
+              then return (B (Forget (T.pack v)))
+              else F <$> getv v')
+          (extend env (phase, ty'))
+          vars
+          cont
+
+test1 :: IO ()
+test1 = test "SIMPLE-APP"
+  [ ("Bool", Heaven, Type)
+  , ("true", Earth, "Bool")
+  , ("false", Earth, "Bool")
+  , ("not", Earth, (Earth, "Bool") --> ev "Bool")
+  ]
+  Earth
+  "Bool"
+  (eapp "not" ["true"])
+
+test2 :: IO ()
+test2 = test "NAT"
+  [ ("Nat", Heaven, Type)
+  , ("zero", Earth, "Nat")
+  , ("suc", Earth, (Earth, "Nat") --> "Nat")
+  , ("n", Heaven, "Nat")
+  ]
+  Heaven
+  "Nat"
+  (eapp "suc" ["n"])
+
+main :: IO ()
+main = do
+  test1
+  test2
