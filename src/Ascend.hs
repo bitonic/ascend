@@ -7,6 +7,15 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
+-- very simple calculus with explicit relevancy info
+-- in function arguments.
+--
+-- see
+-- <https://personal.cis.strath.ac.uk/conor.mcbride/pub/phtt.pdf>
+-- and
+-- <https://personal.cis.strath.ac.uk/conor.mcbride/pub/InAWorld.pdf>
+-- and
+-- <https://pigworker.wordpress.com/2014/12/31/worlds/>
 module Ascend where
 
 import Control.Monad (ap, unless, when)
