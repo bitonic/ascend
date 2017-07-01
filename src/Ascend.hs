@@ -20,7 +20,7 @@ module Ascend where
 
 import Control.Monad (ap, unless, when)
 import Data.Traversable (for)
-import Data.Void (Void, absurd)
+import Data.Void (absurd)
 import Data.String (IsString(fromString))
 
 -- a datatype to forget
@@ -138,7 +138,7 @@ checkEqual a b = do
 checkPhase :: Phase -> Phase -> Either String ()
 checkPhase required actual = do
   unless (actual <= required) $
-    Left ("Bad phase: " ++ show (required, given))
+    Left ("Bad phase: " ++ show (required, actual))
 
 check ::
      (IsVar a)
@@ -202,13 +202,7 @@ checkSpine env phase ty = \case
       -- and thus we can discharge its arguments
       -- too
       check env (lub phase (remember domPhase)) dom arg
-      checkSpine
-        env
-        phase
-        (cod >>= \case
-          B{} -> arg
-          F v -> return v)
-        args
+      checkSpine env phase (inst cod arg) args
     _ -> Left "non-Pi type for application"
 
 -- erasure
